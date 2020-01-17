@@ -174,4 +174,34 @@ ZIG_EXTERN_C void stage2_progress_complete_one(Stage2ProgressNode *node);
 ZIG_EXTERN_C void stage2_progress_update_node(Stage2ProgressNode *node,
         size_t completed_count, size_t estimated_total_items);
 
+// ABI warning
+ZIG_EXTERN_C void stage2_list_features_for_arch(const char *arch_name_ptr, size_t arch_name_len, bool show_subfeatures);
+
+// ABI warning
+ZIG_EXTERN_C void stage2_list_cpus_for_arch(const char *arch_name_ptr, size_t arch_name_len, bool show_subfeatures);
+
+// ABI warning
+struct Stage2TargetDetails;
+
+// ABI warning
+ZIG_EXTERN_C Stage2TargetDetails *stage2_target_details_parse_cpu(const char *arch, const char *str);
+
+// ABI warning
+ZIG_EXTERN_C Stage2TargetDetails *stage2_target_details_parse_features(const char *arch, const char *str);
+
+// ABI warning
+ZIG_EXTERN_C const char *stage2_target_details_get_cache_str(const Stage2TargetDetails *target_details);
+
+// ABI warning
+ZIG_EXTERN_C const char *stage2_target_details_get_llvm_cpu(const Stage2TargetDetails *target_details);
+
+// ABI warning
+ZIG_EXTERN_C const char *stage2_target_details_get_llvm_features(const Stage2TargetDetails *target_details);
+
+// ABI warning
+ZIG_EXTERN_C const char *stage2_target_details_get_builtin_str(const Stage2TargetDetails *target_details);
+
+// ABI warning
+ZIG_EXTERN_C Stage2TargetDetails *stage2_target_details_get_default(const char *arch, const char *os);
+
 #endif

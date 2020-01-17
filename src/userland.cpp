@@ -88,3 +88,27 @@ void stage2_progress_end(Stage2ProgressNode *node) {}
 void stage2_progress_complete_one(Stage2ProgressNode *node) {}
 void stage2_progress_disable_tty(Stage2Progress *progress) {}
 void stage2_progress_update_node(Stage2ProgressNode *node, size_t completed_count, size_t estimated_total_items){}
+
+void stage2_list_features_for_arch(const char *arch_name_ptr, size_t arch_name_len, bool show_subfeatures) {}
+void stage2_list_cpus_for_arch(const char *arch_name_ptr, size_t arch_name_len, bool show_subfeatures) {}
+Stage2TargetDetails *stage2_target_details_parse_cpu(const char *arch, const char *str) {
+    return nullptr;
+}
+Stage2TargetDetails *stage2_target_details_parse_features(const char *arch, const char *str) {
+    return nullptr;
+}
+const char *stage2_target_details_get_cache_str(const Stage2TargetDetails *target_details) {
+    return "";
+}
+const char *stage2_target_details_get_llvm_cpu(const Stage2TargetDetails *target_details) {
+    return "";
+}
+const char *stage2_target_details_get_llvm_features(const Stage2TargetDetails *target_details) {
+    return "";
+}
+const char *stage2_target_details_get_builtin_str(const Stage2TargetDetails *target_details) {
+    return "";
+}
+Stage2TargetDetails *stage2_target_details_get_default(const char *arch, const char *os) {
+    return nullptr;
+}

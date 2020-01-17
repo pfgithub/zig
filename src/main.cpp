@@ -100,6 +100,8 @@ static int print_full_usage(const char *arg0, FILE *file, int return_code) {
         "  --override-lib-dir [arg]     override path to Zig lib directory\n"
         "  -ffunction-sections          places each function in a separate section\n"
         "  -D[macro]=[value]            define C [macro] to [value] (1 if [value] omitted)\n"
+        "  --cpu [cpu]                  compile for [cpu] on the current target\n"
+        "  --features [feature_str]     compile with features in [feature_str] on the current target\n"
         "\n"
         "Link Options:\n"
         "  --bundle-compiler-rt         for static libraries, include compiler-rt symbols\n"
@@ -129,6 +131,11 @@ static int print_full_usage(const char *arg0, FILE *file, int return_code) {
         "  --test-name-prefix [text]    add prefix to all tests\n"
         "  --test-cmd [arg]             specify test execution command one arg at a time\n"
         "  --test-cmd-bin               appends test binary path to test cmd args\n"
+        "\n"
+        "Targets Options:\n"
+        "  --list-features [arch]       list available features for the given architecture\n"
+        "  --list-cpus [arch]           list available cpus for the given architecture\n"
+        "  --show-dependencies          list feature dependencies for each entry from --list-{features,cpus}\n"
     , arg0);
     return return_code;
 }
@@ -528,6 +535,12 @@ int main(int argc, char **argv) {
     WantStackCheck want_stack_check = WantStackCheckAuto;
     WantCSanitize want_sanitize_c = WantCSanitizeAuto;
     bool function_sections = false;
+    const char *cpu = nullptr;
+    const char *features = nullptr;
+
+    const char *targets_list_features_arch = nullptr;
+    const char *targets_list_cpus_arch = nullptr;
+    bool targets_show_dependencies = false;
 
     ZigList<const char *> llvm_argv = {0};
     llvm_argv.append("zig (LLVM option parsing)");
@@ -779,6 +792,8 @@ int main(int argc, char **argv) {
                 cur_pkg = cur_pkg->parent;
             } else if (strcmp(arg, "-ffunction-sections") == 0) {
                 function_sections = true;
+            } else if (strcmp(arg, "--show-dependencies") == 0) {
+                targets_show_dependencies = true;
             } else if (i + 1 >= argc) {
                 fprintf(stderr, "Expected another argument after %s\n", arg);
                 return print_error_usage(arg0);
@@ -936,7 +951,15 @@ int main(int argc, char **argv) {
                             , argv[i]);
                         return EXIT_FAILURE;
                     }
-                } else {
+                } else if (strcmp(arg, "--list-features") == 0) {
+                    targets_list_features_arch = argv[i];
+                } else if (strcmp(arg, "--list-cpus") == 0) {
+                    targets_list_cpus_arch = argv[i];
+                } else if (strcmp(arg, "--cpu") == 0) {
+                    cpu = argv[i];
+                } else if (strcmp(arg, "--features") == 0) {
+                    features = argv[i];
+                }else {
                     fprintf(stderr, "Invalid argument: %s\n", arg);
                     return print_error_usage(arg0);
                 }
@@ -1051,6 +1074,30 @@ int main(int argc, char **argv) {
         }
     }
 
+    Stage2TargetDetails *target_details = nullptr;
+    if (cpu && features) {
+        fprintf(stderr, "--cpu and --features options not allowed together\n");
+        return main_exit(root_progress_node, EXIT_FAILURE);
+    } else if (cpu) {
+        target_details = stage2_target_details_parse_cpu(target_arch_name(target.arch), cpu);
+        if (!target_details) {
+            fprintf(stderr, "invalid --cpu value\n");
+            return main_exit(root_progress_node, EXIT_FAILURE);
+        }
+    } else if (features) {
+        target_details = stage2_target_details_parse_features(target_arch_name(target.arch), features);
+        if (!target_details) {
+            fprintf(stderr, "invalid --features value\n");
+            return main_exit(root_progress_node, EXIT_FAILURE);
+        }
+    } else {
+        // If no details are specified and we are not native, load
+        // cross-compilation default features.
+        if (!target.is_native) {
+            target_details = stage2_target_details_get_default(target_arch_name(target.arch), target_os_name(target.os));
+        }
+    }
+
     if (output_dir != nullptr && enable_cache == CacheOptOn) {
         fprintf(stderr, "`--output-dir` is incompatible with --cache on.\n");
         return print_error_usage(arg0);
@@ -1101,6 +1148,7 @@ int main(int argc, char **argv) {
         g->want_stack_check = want_stack_check;
         g->want_sanitize_c = want_sanitize_c;
         g->want_single_threaded = want_single_threaded;
+        g->target_details = target_details;
         Buf *builtin_source = codegen_generate_builtin_source(g);
         if (fwrite(buf_ptr(builtin_source), 1, buf_len(builtin_source), stdout) != buf_len(builtin_source)) {
             fprintf(stderr, "unable to write to stdout: %s\n", strerror(ferror(stdout)));
@@ -1233,6 +1281,7 @@ int main(int argc, char **argv) {
             g->system_linker_hack = system_linker_hack;
             g->function_sections = function_sections;
 
+
             for (size_t i = 0; i < lib_dirs.length; i += 1) {
                 codegen_add_lib_dir(g, lib_dirs.at(i));
             }
@@ -1253,6 +1302,8 @@ int main(int argc, char **argv) {
             for (size_t i = 0; i < rpath_list.length; i += 1) {
                 codegen_add_rpath(g, rpath_list.at(i));
             }
+
+            g->target_details = target_details;
 
             codegen_set_rdynamic(g, rdynamic);
             if (mmacosx_version_min && mios_version_min) {
@@ -1413,7 +1464,21 @@ int main(int argc, char **argv) {
         return main_exit(root_progress_node, EXIT_SUCCESS);
     }
     case CmdTargets:
-        return print_target_list(stdout);
+        if (targets_list_features_arch != nullptr) {
+            stage2_list_features_for_arch(
+                targets_list_features_arch,
+                strlen(targets_list_features_arch),
+                targets_show_dependencies);
+            return 0;
+        } else if (targets_list_cpus_arch != nullptr) {
+            stage2_list_cpus_for_arch(
+                targets_list_cpus_arch,
+                strlen(targets_list_cpus_arch),
+                targets_show_dependencies);
+            return 0;
+        } else {
+            return print_target_list(stdout);
+        }
     case CmdNone:
         return print_full_usage(arg0, stderr, EXIT_FAILURE);
     }
