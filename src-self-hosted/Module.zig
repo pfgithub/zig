@@ -301,6 +301,23 @@ pub const Fn = struct {
         body: zir.Module.Body,
         arena: std.heap.ArenaAllocator.State,
     };
+
+    /// For debugging purposes.
+    pub fn dump(self: *Fn, mod: Module) void {
+        std.debug.print("Module.Function(name={}) ", .{self.owner_decl.name});
+        switch (self.analysis) {
+            .queued => {
+                std.debug.print("queued\n", .{});
+            },
+            .in_progress => {
+                std.debug.print("in_progress\n", .{});
+            },
+            else => {
+                std.debug.print("\n", .{});
+                zir.dumpFn(mod, self);
+            },
+        }
+    }
 };
 
 pub const Scope = struct {
@@ -1301,14 +1318,16 @@ fn astGenAndAnalyzeDecl(self: *Module, decl: *Decl) !bool {
                 for (fn_proto.params()) |param, i| {
                     const name_token = param.name_token.?;
                     const src = tree.token_locs[name_token].start;
-                    const param_name = tree.tokenSlice(name_token);
-                    const arg = try gen_scope_arena.allocator.create(zir.Inst.NoOp);
+                    const param_name = tree.tokenSlice(name_token); // TODO: call identifierTokenString
+                    const arg = try gen_scope_arena.allocator.create(zir.Inst.Arg);
                     arg.* = .{
                         .base = .{
                             .tag = .arg,
                             .src = src,
                         },
-                        .positionals = .{},
+                        .positionals = .{
+                            .name = param_name,
+                        },
                         .kw_args = .{},
                     };
                     gen_scope.instructions.items[i] = &arg.base;
@@ -1324,10 +1343,10 @@ fn astGenAndAnalyzeDecl(self: *Module, decl: *Decl) !bool {
 
                 const body_block = body_node.cast(ast.Node.Block).?;
 
-                try astgen.blockExpr(self, params_scope, body_block);
+                _ = try astgen.blockExpr(self, params_scope, .none, body_block);
 
-                if (!fn_type.fnReturnType().isNoReturn() and (gen_scope.instructions.items.len == 0 or
-                    !gen_scope.instructions.items[gen_scope.instructions.items.len - 1].tag.isNoReturn()))
+                if (gen_scope.instructions.items.len == 0 or
+                    !gen_scope.instructions.items[gen_scope.instructions.items.len - 1].tag.isNoReturn())
                 {
                     const src = tree.token_locs[body_block.rbrace].start;
                     _ = try astgen.addZIRNoOp(self, &gen_scope.base, src, .returnvoid);
@@ -1934,6 +1953,20 @@ pub fn addBinOp(
     return &inst.base;
 }
 
+pub fn addArg(self: *Module, block: *Scope.Block, src: usize, ty: Type, name: [*:0]const u8) !*Inst {
+    const inst = try block.arena.create(Inst.Arg);
+    inst.* = .{
+        .base = .{
+            .tag = .arg,
+            .ty = ty,
+            .src = src,
+        },
+        .name = name,
+    };
+    try block.instructions.append(self.gpa, &inst.base);
+    return &inst.base;
+}
+
 pub fn addBr(
     self: *Module,
     scope_block: *Scope.Block,
@@ -2203,11 +2236,6 @@ pub fn wantSafety(self: *Module, scope: *Scope) bool {
     };
 }
 
-pub fn analyzeUnreach(self: *Module, scope: *Scope, src: usize) InnerError!*Inst {
-    const b = try self.requireRuntimeBlock(scope, src);
-    return self.addNoOp(b, src, Type.initTag(.noreturn), .unreach);
-}
-
 pub fn analyzeIsNull(
     self: *Module,
     scope: *Scope,
@@ -2460,6 +2488,24 @@ pub fn coerce(self: *Module, scope: *Scope, dest_type: Type, inst: *Inst) !*Inst
     }
     assert(inst.ty.zigTypeTag() != .Undefined);
 
+    // null to ?T
+    if (dest_type.zigTypeTag() == .Optional and inst.ty.zigTypeTag() == .Null) {
+        return self.constInst(scope, inst.src, .{ .ty = dest_type, .val = Value.initTag(.null_value) });
+    }
+
+    // T to ?T
+    if (dest_type.zigTypeTag() == .Optional) {
+        const child_type = dest_type.elemType();
+        if (inst.value()) |val| {
+            if (child_type.eql(inst.ty)) {
+                return self.constInst(scope, inst.src, .{ .ty = dest_type, .val = val });
+            }
+            return self.fail(scope, inst.src, "TODO optional wrap {} to {}", .{ val, dest_type });
+        } else if (child_type.eql(inst.ty)) {
+            return self.fail(scope, inst.src, "TODO optional wrap {}", .{dest_type});
+        }
+    }
+
     // *[N]T to []T
     if (inst.ty.isSinglePointer() and dest_type.isSlice() and
         (!inst.ty.isConstPtr() or dest_type.isConstPtr()))
@@ -2535,7 +2581,7 @@ pub fn coerce(self: *Module, scope: *Scope, dest_type: Type, inst: *Inst) !*Inst
         }
     }
 
-    return self.fail(scope, inst.src, "expected {}, found {}", .{  dest_type, inst.ty });
+    return self.fail(scope, inst.src, "expected {}, found {}", .{ dest_type, inst.ty });
 }
 
 pub fn storePtr(self: *Module, scope: *Scope, src: usize, ptr: *Inst, uncasted_value: *Inst) !*Inst {
@@ -2782,7 +2828,7 @@ pub fn floatAdd(self: *Module, scope: *Scope, float_type: Type, src: usize, lhs:
             val_payload.* = .{ .val = lhs_val + rhs_val };
             break :blk &val_payload.base;
         },
-        128 => blk: {
+        128 => {
             return self.fail(scope, src, "TODO Implement addition for big floats", .{});
         },
         else => unreachable,
@@ -2816,7 +2862,7 @@ pub fn floatSub(self: *Module, scope: *Scope, float_type: Type, src: usize, lhs:
             val_payload.* = .{ .val = lhs_val - rhs_val };
             break :blk &val_payload.base;
         },
-        128 => blk: {
+        128 => {
             return self.fail(scope, src, "TODO Implement substraction for big floats", .{});
         },
         else => unreachable,
@@ -2867,4 +2913,71 @@ pub fn dumpInst(self: *Module, scope: *Scope, inst: *Inst) void {
             loc.column + 1,
         });
     }
+}
+
+pub const PanicId = enum {
+    unreach,
+    unwrap_null,
+};
+
+pub fn addSafetyCheck(mod: *Module, parent_block: *Scope.Block, ok: *Inst, panic_id: PanicId) !void {
+    const block_inst = try parent_block.arena.create(Inst.Block);
+    block_inst.* = .{
+        .base = .{
+            .tag = Inst.Block.base_tag,
+            .ty = Type.initTag(.void),
+            .src = ok.src,
+        },
+        .body = .{
+            .instructions = try parent_block.arena.alloc(*Inst, 1), // Only need space for the condbr.
+        },
+    };
+
+    const ok_body: ir.Body = .{
+        .instructions = try parent_block.arena.alloc(*Inst, 1), // Only need space for the brvoid.
+    };
+    const brvoid = try parent_block.arena.create(Inst.BrVoid);
+    brvoid.* = .{
+        .base = .{
+            .tag = .brvoid,
+            .ty = Type.initTag(.noreturn),
+            .src = ok.src,
+        },
+        .block = block_inst,
+    };
+    ok_body.instructions[0] = &brvoid.base;
+
+    var fail_block: Scope.Block = .{
+        .parent = parent_block,
+        .func = parent_block.func,
+        .decl = parent_block.decl,
+        .instructions = .{},
+        .arena = parent_block.arena,
+    };
+    defer fail_block.instructions.deinit(mod.gpa);
+
+    _ = try mod.safetyPanic(&fail_block, ok.src, panic_id);
+
+    const fail_body: ir.Body = .{ .instructions = try parent_block.arena.dupe(*Inst, fail_block.instructions.items) };
+
+    const condbr = try parent_block.arena.create(Inst.CondBr);
+    condbr.* = .{
+        .base = .{
+            .tag = .condbr,
+            .ty = Type.initTag(.noreturn),
+            .src = ok.src,
+        },
+        .condition = ok,
+        .then_body = ok_body,
+        .else_body = fail_body,
+    };
+    block_inst.body.instructions[0] = &condbr.base;
+
+    try parent_block.instructions.append(mod.gpa, &block_inst.base);
+}
+
+pub fn safetyPanic(mod: *Module, block: *Scope.Block, src: usize, panic_id: PanicId) !*Inst {
+    // TODO Once we have a panic function to call, call it here instead of breakpoint.
+    _ = try mod.addNoOp(block, src, Type.initTag(.void), .breakpoint);
+    return mod.addNoOp(block, src, Type.initTag(.noreturn), .unreach);
 }

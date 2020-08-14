@@ -42,22 +42,24 @@ pub fn log(
     comptime format: []const u8,
     args: anytype,
 ) void {
-    if (@enumToInt(level) > @enumToInt(std.log.level))
-        return;
+    // Hide anything more verbose than warn unless it was added with `-Dlog=foo`.
+    if (@enumToInt(level) > @enumToInt(std.log.level) or
+        @enumToInt(level) > @enumToInt(std.log.Level.warn))
+    {
+        const scope_name = @tagName(scope);
+        const ok = comptime for (build_options.log_scopes) |log_scope| {
+            if (mem.eql(u8, log_scope, scope_name))
+                break true;
+        } else false;
 
-    const scope_name = @tagName(scope);
-    const ok = comptime for (build_options.log_scopes) |log_scope| {
-        if (mem.eql(u8, log_scope, scope_name))
-            break true;
-    } else false;
-
-    if (!ok)
-        return;
+        if (!ok)
+            return;
+    }
 
     const prefix = "[" ++ @tagName(level) ++ "] " ++ "(" ++ @tagName(scope) ++ "): ";
 
     // Print the message to stderr, silently ignoring any errors
-    std.debug.print(prefix ++ format, args);
+    std.debug.print(prefix ++ format ++ "\n", args);
 }
 
 var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{}){};

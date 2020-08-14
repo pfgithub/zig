@@ -26,6 +26,11 @@ pub fn addCases(ctx: *TestContext) !void {
 
         case.addError("", &[_][]const u8{":1:1: error: no entry point found"});
 
+        case.addError(
+            \\export fn _start() noreturn {
+            \\}
+        , &[_][]const u8{":2:1: error: expected noreturn, found void"});
+
         // Regular old hello world
         case.addCompareOutput(
             \\export fn _start() noreturn {
@@ -474,6 +479,69 @@ pub fn addCases(ctx: *TestContext) !void {
             \\}
         ,
             "",
+        );
+
+        // Optionals
+        case.addCompareOutput(
+            \\export fn _start() noreturn {
+            \\    const a: u32 = 2;
+            \\    const b: ?u32 = a;
+            \\    const c = b.?;
+            \\    if (c != 2) unreachable;
+            \\
+            \\    exit();
+            \\}
+            \\
+            \\fn exit() noreturn {
+            \\    asm volatile ("syscall"
+            \\        :
+            \\        : [number] "{rax}" (231),
+            \\          [arg1] "{rdi}" (0)
+            \\        : "rcx", "r11", "memory"
+            \\    );
+            \\    unreachable;
+            \\}
+        ,
+            "",
+        );
+
+        // While loops
+        case.addCompareOutput(
+            \\export fn _start() noreturn {
+            \\    var i: u32 = 0;
+            \\    while (i < 4) : (i += 1) print();
+            \\    assert(i == 4);
+            \\
+            \\    exit();
+            \\}
+            \\
+            \\fn print() void {
+            \\    asm volatile ("syscall"
+            \\        :
+            \\        : [number] "{rax}" (1),
+            \\          [arg1] "{rdi}" (1),
+            \\          [arg2] "{rsi}" (@ptrToInt("hello\n")),
+            \\          [arg3] "{rdx}" (6)
+            \\        : "rcx", "r11", "memory"
+            \\    );
+            \\    return;
+            \\}
+            \\
+            \\pub fn assert(ok: bool) void {
+            \\    if (!ok) unreachable; // assertion failure
+            \\}
+            \\
+            \\fn exit() noreturn {
+            \\    asm volatile ("syscall"
+            \\        :
+            \\        : [number] "{rax}" (231),
+            \\          [arg1] "{rdi}" (0)
+            \\        : "rcx", "r11", "memory"
+            \\    );
+            \\    unreachable;
+            \\}
+        ,
+            "hello\nhello\nhello\nhello\n",
         );
     }
 }
