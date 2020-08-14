@@ -464,6 +464,23 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
 
         fn gen(self: *Self) !void {
             switch (arch) {
+                .riscv64 => {
+                    const cc = self.fn_type.fnCallingConvention();
+                    if (cc != .Naked) {
+                        // addi sp, sp, -16
+                        // sd ra, 8(sp)
+                        try self.dbgSetPrologueEnd();
+                        try self.genBody(self.mod_fn.analysis.success);
+                        try self.dbgSetEpilogueBegin();
+                        // ld ra, 8(sp)
+                        // addi sp, sp, 16
+                        // ret
+                    }else{
+                        try self.dbgSetPrologueEnd();
+                        try self.genBody(self.mod_fn.analysis.success);
+                        try self.dbgSetEpilogueBegin();
+                    }
+                },
                 .x86_64 => {
                     try self.code.ensureCapacity(self.code.items.len + 11);
 
@@ -1098,7 +1115,35 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
                     }
                 },
                 .riscv64 => {
-                    if (info.args.len > 0) return self.fail(inst.base.src, "TODO implement fn args for {}", .{self.target.cpu.arch});
+                    for (info.args) |mc_arg, arg_i| {
+                        const arg = inst.args[arg_i];
+                        const arg_mcv = try self.resolveInst(inst.args[arg_i]);
+                        // Here we do not use setRegOrMem even though the logic is similar, because
+                        // the function call will move the stack pointer, so the offsets are different.
+                        switch (mc_arg) {
+                            .none => continue,
+                            .register => |reg| {
+                                try self.genSetReg(arg.src, reg, arg_mcv);
+                            },
+                            .stack_offset => {
+                                return self.fail(inst.base.src, "TODO implement calling with parameters in memory", .{});
+                            },
+                            .ptr_stack_offset => {
+                                return self.fail(inst.base.src, "TODO implement calling with MCValue.ptr_stack_offset arg", .{});
+                            },
+                            .ptr_embedded_in_code => {
+                                return self.fail(inst.base.src, "TODO implement calling with MCValue.ptr_embedded_in_code arg", .{});
+                            },
+                            .undef => unreachable,
+                            .immediate => unreachable,
+                            .unreach => unreachable,
+                            .dead => unreachable,
+                            .embedded_in_code => unreachable,
+                            .memory => unreachable,
+                            .compare_flags_signed => unreachable,
+                            .compare_flags_unsigned => unreachable,
+                        }
+                    }
 
                     if (inst.func.cast(ir.Inst.Constant)) |func_inst| {
                         if (func_inst.val.cast(Value.Payload.Function)) |func_val| {
@@ -2023,6 +2068,40 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
                         else => return self.fail(src, "TODO implement function parameters for {}", .{cc}),
                     }
                 },
+                .riscv64 => {
+                    switch(cc) {
+                        .Naked => {
+                            assert(result.args.len == 0);
+                            result.return_value = .{.unreach = {}};
+                            result.stack_byte_count = 0;
+                            result.stack_align = 1;
+                            return result;
+                        },
+                        .Unspecified => {
+                            var next_int_reg: usize = 0;
+                            
+                            for(param_types) |ty, i| {
+                                switch(ty.zigTypeTag()) {
+                                    .Bool, .Int => {
+                                        const param_size = @intCast(u32, ty.abiSize(self.target.*));
+                                        if (next_int_reg >= c_abi_int_param_regs.len) {
+                                            return self.fail(src, "TODO implement stack parameters for riscv64", .{});
+                                        } else if(param_size > 8) {
+                                            return self.fail(src, "TODO implement >64 bit parameters for riscv64", .{});
+                                        } else {
+                                            result.args[i] = .{ .register = c_abi_int_param_regs[next_int_reg] };
+                                            next_int_reg += 1;
+                                        }
+                                    },
+                                    else => return self.fail(src, "TODO implement function parameters of type {}", .{@tagName(ty.zigTypeTag())}),
+                                }
+                            }
+                            result.stack_byte_count = 0;
+                            result.stack_align = 16;
+                        },
+                        else => return self.fail(src, "TODO implement function parameters for {}", .{cc}),
+                    }
+                },
                 else => if (param_types.len != 0)
                     return self.fail(src, "TODO implement codegen parameters for {}", .{self.target.cpu.arch}),
             }
@@ -2038,6 +2117,15 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
                         const ret_ty_size = @intCast(u32, ret_ty.abiSize(self.target.*));
                         const aliased_reg = registerAlias(c_abi_int_return_regs[0], ret_ty_size);
                         result.return_value = .{ .register = aliased_reg };
+                    },
+                    else => return self.fail(src, "TODO implement function return values for {}", .{cc}),
+                },
+                .riscv64 => switch(cc) {
+                    .Naked => unreachable,
+                    .Unspecified => {
+                        const ret_ty_size = @intCast(u32, ret_ty.abiSize(self.target.*));
+                        if(ret_ty_size > 8) return self.fail(src, "TODO implement >64 bit function return values for {}", .{cc});
+                        result.return_value = .{.register = c_abi_int_return_regs[0]};
                     },
                     else => return self.fail(src, "TODO implement function return values for {}", .{cc}),
                 },
