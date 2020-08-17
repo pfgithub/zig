@@ -101,7 +101,7 @@ pub const Instruction = union(enum) {
                 .rs1 = @enumToInt(r1),
                 .rs2 = @enumToInt(r2),
                 .imm0_4 = @truncate(u5, umm),
-                .imm5_11 = @truncate(u6, umm >> 5),
+                .imm5_11 = @truncate(u7, umm >> 5),
             },
         };
     }
@@ -432,3 +432,4 @@ pub const c_abi_int_param_regs = [_]Register{
 pub const c_abi_int_return_regs = [_]Register{
     .a0, .a1,
 };
+pub const reserved_register = Register.t0;

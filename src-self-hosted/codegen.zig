@@ -1587,9 +1587,76 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
                 else => unreachable,
             }
         }
+        
+        fn genRiscv64Instruction(self: *Self, instruction: Instruction) InnerError!void {
+            mem.writeIntLittle(u32, try self.code.addManyAsArray(4), instruction.toU32());
+        }
 
         fn genSetStack(self: *Self, src: usize, ty: Type, stack_offset: u32, mcv: MCValue) InnerError!void {
             switch (arch) {
+                // Set $sp - stack_offset = mcv
+                .riscv64 => switch(mcv) {
+                    .dead => unreachable,
+                    .ptr_stack_offset => unreachable,
+                    .ptr_embedded_in_code => unreachable,
+                    .unreach, .none => return, // Nothing to do.
+                    .undef => {
+                        if (!self.wantSafety())
+                            return; // The already existing value will do just fine.
+                        // TODO Upgrade this to a memset call when we have that available.
+                        switch (ty.abiSize(self.target.*)) {
+                            1 => return self.genSetStack(src, ty, stack_offset, .{ .immediate = 0xaa }),
+                            2 => return self.genSetStack(src, ty, stack_offset, .{ .immediate = 0xaaaa }),
+                            4 => return self.genSetStack(src, ty, stack_offset, .{ .immediate = 0xaaaaaaaa }),
+                            8 => return self.genSetStack(src, ty, stack_offset, .{ .immediate = 0xaaaaaaaaaaaaaaaa }),
+                            else => return self.fail(src, "TODO implement memset", .{}),
+                        }
+                    },
+                    .compare_flags_unsigned => |op| {
+                        return self.fail(src, "TODO implement set stack variable with compare flags value (unsigned)", .{});
+                    },
+                    .compare_flags_signed => |op| {
+                        return self.fail(src, "TODO implement set stack variable with compare flags value (signed)", .{});
+                    },
+                    .immediate => |x_big| {
+                        const abi_size = ty.abiSize(self.target.*);
+                        const adj_off = stack_offset + abi_size;
+                        
+                        if(adj_off > -std.math.minInt(i12))
+                            return self.fail(src, "TODO implement set stack variable with >i12 offset", .{});
+                        const low12: i12 = @intCast(i12, -@intCast(i13, adj_off));
+
+                        switch (abi_size) {
+                            1 => {
+                                return self.fail(src, "TODO implement set abi_size=1 stack variable with immediate", .{});
+                            },
+                            2 => {
+                                return self.fail(src, "TODO implement set abi_size=2 stack variable with immediate", .{});
+                            },
+                            4 => {
+                                // li $value_reg = x_big;
+                                try self.genSetReg(src, reserved_register, .{.immediate = x_big});
+                                // storeword $sp + low12 = $value_reg
+                                try self.genRiscv64Instruction(Instruction.sw(reserved_register, low12, .sp));
+                            },
+                            8 => {
+                                return self.fail(src, "TODO implement set abi_size=8 stack variable with immediate", .{});
+                            },
+                            else => {
+                                return self.fail(src, "TODO implement set abi_size=large stack variable with immediate", .{});
+                            },
+                        }
+                    },
+                    .stack_offset => |off| {
+                        if (stack_offset == off)
+                            return; // Copy stack variable to itself; nothing to do.
+                        // Set $sp - stack_offset = $sp - off
+                        // self.genSetReg(src, .somereg, .{.stack_offset = off})
+                        // self.genSetStack(src, ty, stack_offset, .{.register = .somereg});
+                        return self.fail(src, "TODO implement copy stack variable to stack variable", .{});
+                    },
+                    else => return self.fail(src, "TODO implement genSetStack for mcv {}\n", .{mcv}),
+                },
                 .x86_64 => switch (mcv) {
                     .dead => unreachable,
                     .ptr_stack_offset => unreachable,
@@ -1686,6 +1753,59 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
                 else => return self.fail(src, "TODO implement getSetStack for {}", .{self.target.cpu.arch}),
             }
         }
+        
+        // Set a register to an immediate value, return the last signed 12 bits to add.
+        fn genRiscv64SetImmediateExcl12(self: *Self, src: usize, reg: Register, unsigned_x: u64) InnerError!i12 {
+            const x = @bitCast(i64, unsigned_x);
+            if (math.minInt(i12) <= x and x <= math.maxInt(i12)) {
+                mem.writeIntLittle(u32, try self.code.addManyAsArray(4), Instruction.addi(reg, .zero, @truncate(i12, x)).toU32());
+                return 0; // nothing left.
+                // this can't just return intcasted x because the next instruction
+                // would need to know to base from zero, and this does not tell it.
+                // TODO: emit one less instruction by telling the next instruction to use $zero + low12 instead of $reg + low12
+            }
+            if (math.minInt(i32) <= x and x <= math.maxInt(i32)) {
+                const lo12 = @truncate(i12, x);
+                const carry: i32 = if (lo12 < 0) 1 else 0;
+                const hi20 = @truncate(i20, (x >> 12) +% carry);
+
+                // TODO: add test case for 32-bit immediate
+                mem.writeIntLittle(u32, try self.code.addManyAsArray(4), Instruction.lui(reg, hi20).toU32());
+                return lo12;
+            }
+            
+            // temporary hack until 64 bit immediate loads are implemented
+            if(x == 0xaaaaaaaa) {
+                try self.genRiscv64Instruction(Instruction.lui(reg, 0xAB));
+                try self.genRiscv64Instruction(Instruction.addiw(reg, reg, -0x555));
+                try self.genRiscv64Instruction(Instruction.slli(reg, reg, 0xC));
+                return -0x556;
+            }
+            if(x == 0xaaaaaaaaaaaaaaaa) {
+                try self.genRiscv64Instruction(Instruction.lui(reg, 0xFAAAB));
+                try self.genRiscv64Instruction(Instruction.addiw(reg, reg, -1365));
+                try self.genRiscv64Instruction(Instruction.slli(reg, reg, 0xC));
+                try self.genRiscv64Instruction(Instruction.addiw(reg, reg, -1365));
+                try self.genRiscv64Instruction(Instruction.slli(reg, reg, 0xC));
+                try self.genRiscv64Instruction(Instruction.addiw(reg, reg, -1365));
+                try self.genRiscv64Instruction(Instruction.slli(reg, reg, 0xC));
+                return -1366;
+            }
+            // since this is a compiler, it can get a reserved register (eg: if(reg == .t0) .t1 else .t0)
+            // - load the lower 32 bits into $reserved (truncate(i32, x))
+            // - load the upper 32 bits into $reg (truncate(i32, x >> 32))
+            // - shift left 
+            // - add $reg = $reg + $reserved
+            // - correctly handle the case where the lower 32 bits are negative
+            // (6 instructions instead of the 8 required for an assembler)
+            // or instead, it can do what an assembler does which is:
+            // - lui i20, addiw i12, slli <<12, addi i12, slli <<12, addi i12, slli <<12, return remainder
+            // - correctly handle the cases when any of the integers are negative
+            
+            // li rd, immediate
+            // "Myriad sequences"
+            return self.fail(src, "TODO genSetReg >i32 immediates for riscv64 (trying to set 0x{x})", .{unsigned_x}); // glhf
+        }
 
         fn genSetReg(self: *Self, src: usize, reg: Register, mcv: MCValue) InnerError!void {
             switch (arch) {
@@ -1701,31 +1821,15 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
                         return self.genSetReg(src, reg, .{ .immediate = 0xaaaaaaaaaaaaaaaa });
                     },
                     .immediate => |unsigned_x| {
-                        const x = @bitCast(i64, unsigned_x);
-                        if (math.minInt(i12) <= x and x <= math.maxInt(i12)) {
-                            mem.writeIntLittle(u32, try self.code.addManyAsArray(4), Instruction.addi(reg, .zero, @truncate(i12, x)).toU32());
-                            return;
-                        }
-                        if (math.minInt(i32) <= x and x <= math.maxInt(i32)) {
-                            const lo12 = @truncate(i12, x);
-                            const carry: i32 = if (lo12 < 0) 1 else 0;
-                            const hi20 = @truncate(i20, (x >> 12) +% carry);
-
-                            // TODO: add test case for 32-bit immediate
-                            mem.writeIntLittle(u32, try self.code.addManyAsArray(4), Instruction.lui(reg, hi20).toU32());
-                            if(lo12 != 0) mem.writeIntLittle(u32, try self.code.addManyAsArray(4), Instruction.addi(reg, reg, lo12).toU32());
-                            return;
-                        }
-                        // li rd, immediate
-                        // "Myriad sequences"
-                        return self.fail(src, "TODO genSetReg 33-64 bit immediates for riscv64", .{}); // glhf
+                        const lo12 = try self.genRiscv64SetImmediateExcl12(src, reg, unsigned_x);
+                        if(lo12 != 0) mem.writeIntLittle(u32, try self.code.addManyAsArray(4), Instruction.addi(reg, reg, lo12).toU32());
                     },
                     .memory => |addr| {
                         // The value is in memory at a hard-coded address.
                         // If the type is a pointer, it means the pointer address is at this memory location.
-                        try self.genSetReg(src, reg, .{ .immediate = addr });
+                        const lo12 = try self.genRiscv64SetImmediateExcl12(src, reg, addr);
 
-                        mem.writeIntLittle(u32, try self.code.addManyAsArray(4), Instruction.ld(reg, 0, reg).toU32());
+                        mem.writeIntLittle(u32, try self.code.addManyAsArray(4), Instruction.ld(reg, lo12, reg).toU32());
                         // LOAD imm=[i12 offset = 0], rs1 =
 
                         // return self.fail("TODO implement genSetReg memory for riscv64");
