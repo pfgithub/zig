@@ -1124,41 +1124,41 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
             var info = try self.resolveCallingConventionValues(inst.base.src, inst.func.ty);
             defer info.deinit(self);
 
+            for (info.args) |mc_arg, arg_i| {
+                const arg = inst.args[arg_i];
+                const arg_mcv = try self.resolveInst(inst.args[arg_i]);
+                // Here we do not use setRegOrMem even though the logic is similar, because
+                // the function call will move the stack pointer, so the offsets are different.
+                switch (mc_arg) {
+                    .none => continue,
+                    .register => |reg| {
+                        try self.genSetReg(arg.src, reg, arg_mcv);
+                        // TODO interact with the register allocator to mark the instruction as moved.
+                    },
+                    .stack_offset => {
+                        // Here we need to emit instructions like this:
+                        // mov     qword ptr [rsp + stack_offset], x
+                        return self.fail(inst.base.src, "TODO implement calling with parameters in memory", .{});
+                    },
+                    .ptr_stack_offset => {
+                        return self.fail(inst.base.src, "TODO implement calling with MCValue.ptr_stack_offset arg", .{});
+                    },
+                    .ptr_embedded_in_code => {
+                        return self.fail(inst.base.src, "TODO implement calling with MCValue.ptr_embedded_in_code arg", .{});
+                    },
+                    .undef => unreachable,
+                    .immediate => unreachable,
+                    .unreach => unreachable,
+                    .dead => unreachable,
+                    .embedded_in_code => unreachable,
+                    .memory => unreachable,
+                    .compare_flags_signed => unreachable,
+                    .compare_flags_unsigned => unreachable,
+                }
+            }
+
             switch (arch) {
                 .x86_64 => {
-                    for (info.args) |mc_arg, arg_i| {
-                        const arg = inst.args[arg_i];
-                        const arg_mcv = try self.resolveInst(inst.args[arg_i]);
-                        // Here we do not use setRegOrMem even though the logic is similar, because
-                        // the function call will move the stack pointer, so the offsets are different.
-                        switch (mc_arg) {
-                            .none => continue,
-                            .register => |reg| {
-                                try self.genSetReg(arg.src, reg, arg_mcv);
-                                // TODO interact with the register allocator to mark the instruction as moved.
-                            },
-                            .stack_offset => {
-                                // Here we need to emit instructions like this:
-                                // mov     qword ptr [rsp + stack_offset], x
-                                return self.fail(inst.base.src, "TODO implement calling with parameters in memory", .{});
-                            },
-                            .ptr_stack_offset => {
-                                return self.fail(inst.base.src, "TODO implement calling with MCValue.ptr_stack_offset arg", .{});
-                            },
-                            .ptr_embedded_in_code => {
-                                return self.fail(inst.base.src, "TODO implement calling with MCValue.ptr_embedded_in_code arg", .{});
-                            },
-                            .undef => unreachable,
-                            .immediate => unreachable,
-                            .unreach => unreachable,
-                            .dead => unreachable,
-                            .embedded_in_code => unreachable,
-                            .memory => unreachable,
-                            .compare_flags_signed => unreachable,
-                            .compare_flags_unsigned => unreachable,
-                        }
-                    }
-
                     if (inst.func.cast(ir.Inst.Constant)) |func_inst| {
                         if (func_inst.val.cast(Value.Payload.Function)) |func_val| {
                             const func = func_val.func;
@@ -1178,8 +1178,6 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
                     }
                 },
                 .riscv64 => {
-                    if (info.args.len > 0) return self.fail(inst.base.src, "TODO implement fn args for {}", .{self.target.cpu.arch});
-
                     if (inst.func.cast(ir.Inst.Constant)) |func_inst| {
                         if (func_inst.val.cast(Value.Payload.Function)) |func_val| {
                             const func = func_val.func;
@@ -2084,6 +2082,37 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
             const ret_ty = fn_ty.fnReturnType();
 
             switch (arch) {
+                .riscv64 => {
+                    switch (cc) {
+                        .Naked => {
+                            assert(result.args.len == 0);
+                            result.return_value = .{ .unreach = {} };
+                            result.stack_byte_count = 0;
+                            result.stack_align = 1;
+                            return result;
+                        },
+                        .Unspecified, .C => {
+                            var next_int_reg: usize = 0;
+                            for(param_types) |ty, i| {
+                                switch(ty.zigTypeTag()) {
+                                    .Bool, .Int => {
+                                        const param_size = @intCast(u32, ty.abiSize(self.target.*));
+                                        if(param_size > 8) return self.fail(src, "TODO support int param of size {}", .{param_size});
+                                        if(next_int_reg >= c_abi_int_param_regs.len) {
+                                            return self.fail(src, "TODO support stack parameters in riscv64", .{});
+                                        }else{
+                                            const reg = c_abi_int_param_regs[next_int_reg];
+                                            next_int_reg += 1;
+                                            result.args[i] = .{.register = reg};
+                                        }
+                                    },
+                                    else => return self.fail(src, "TODO support function parameters of type {}", .{@tagName(ty.zigTypeTag())}),
+                                }
+                            }
+                        },
+                        else => return self.fail(src, "TODO implement riscv64 function parameters for callconv(.{})", .{cc}),
+                    }
+                },
                 .x86_64 => {
                     switch (cc) {
                         .Naked => {
@@ -2131,6 +2160,15 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
             } else if (!ret_ty.hasCodeGenBits()) {
                 result.return_value = .{ .none = {} };
             } else switch (arch) {
+                .riscv64 => switch (cc) {
+                    .Naked => unreachable,
+                    .Unspecified, .C => {
+                        const ret_ty_size = @intCast(u32, ret_ty.abiSize(self.target.*));
+                        if(ret_ty_size > 8) return self.fail(src, "TODO implement function return values >8 bytes", .{});
+                        result.return_value = .{ .register = c_abi_int_return_regs[0] };
+                    },
+                    else => return self.fail(src, "TODO implement function return values for {}", .{cc}),
+                },
                 .x86_64 => switch (cc) {
                     .Naked => unreachable,
                     .Unspecified, .C => {
