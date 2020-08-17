@@ -375,7 +375,6 @@ pub const Instruction = union(enum) {
     }
 
     // System
-
     pub const ecall = iType(0b1110011, 0b000, .zero, .zero, 0x000);
     pub const ebreak = iType(0b1110011, 0b000, .zero, .zero, 0x001);
 };
@@ -386,10 +385,6 @@ pub const RawRegister = enum(u5) {
     x8,  x9,  x10, x11, x12, x13, x14, x15,
     x16, x17, x18, x19, x20, x21, x22, x23,
     x24, x25, x26, x27, x28, x29, x30, x31,
-
-    pub fn dwarfLocOp(reg: RawRegister) u8 {
-        return @enumToInt(reg) + DW.OP_reg0;
-    }
 };
 
 pub const Register = enum(u5) {

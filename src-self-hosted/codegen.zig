@@ -1715,7 +1715,7 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
 
                             // TODO: add test case for 32-bit immediate
                             mem.writeIntLittle(u32, try self.code.addManyAsArray(4), Instruction.lui(reg, hi20).toU32());
-                            mem.writeIntLittle(u32, try self.code.addManyAsArray(4), Instruction.addi(reg, reg, lo12).toU32());
+                            if(lo12 != 0) mem.writeIntLittle(u32, try self.code.addManyAsArray(4), Instruction.addi(reg, reg, lo12).toU32());
                             return;
                         }
                         // li rd, immediate
