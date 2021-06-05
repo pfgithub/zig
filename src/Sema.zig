@@ -6560,11 +6560,13 @@ fn coerce(
             // T to ?T
             var buf: Type.Payload.ElemType = undefined;
             const child_type = dest_type.optionalChild(&buf);
-            if (child_type.eql(inst.ty)) {
-                return sema.wrapOptional(block, dest_type, inst);
-            } else if (try sema.coerceNum(block, child_type, inst)) |some| {
-                return sema.wrapOptional(block, dest_type, some);
-            }
+            const some = try sema.coerce(block, child_type, inst, inst_src);
+            return sema.wrapOptional(block, dest_type, some);
+            // if (child_type.eql(inst.ty)) {
+            //     return sema.wrapOptional(block, dest_type, inst);
+            // } else if (try sema.coerceNum(block, child_type, inst)) |some| {
+            //     return sema.wrapOptional(block, dest_type, some);
+            // }
         },
         .Pointer => {
             // Coercions where the source is a single pointer to an array.

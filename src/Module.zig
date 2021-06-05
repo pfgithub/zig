@@ -3317,7 +3317,7 @@ fn scanDecl(iter: *ScanDeclIter, decl_sub_index: usize, flags: u4) InnerError!vo
 
     // zig fmt: off
     const is_pub          = (flags & 0b0001) != 0;
-    const is_exported     = (flags & 0b0010) != 0;
+    var is_exported_or_un = (flags & 0b0010) != 0;
     const has_align       = (flags & 0b0100) != 0;
     const has_linksection = (flags & 0b1000) != 0;
     // zig fmt: on
@@ -3332,7 +3332,8 @@ fn scanDecl(iter: *ScanDeclIter, decl_sub_index: usize, flags: u4) InnerError!vo
     var is_named_test = false;
     const decl_name: [:0]const u8 = switch (decl_name_index) {
         0 => name: {
-            if (is_exported) {
+            if (is_exported_or_un) {
+                is_exported_or_un = false;
                 const i = iter.usingnamespace_index;
                 iter.usingnamespace_index += 1;
                 break :name try std.fmt.allocPrintZ(gpa, "usingnamespace_{d}", .{i});
@@ -3358,6 +3359,8 @@ fn scanDecl(iter: *ScanDeclIter, decl_sub_index: usize, flags: u4) InnerError!vo
             }
         },
     };
+
+    const is_exported = is_exported_or_un;
 
     // We create a Decl for it regardless of analysis status.
     const gop = try namespace.decls.getOrPut(gpa, decl_name);
