@@ -3431,7 +3431,7 @@ pub fn addCCArgs(
                     }
                 },
                 .ReleaseSafe => {
-                    // See the comment in the BuildModeFastRelease case for why we pass -O2 rather
+                    // See the comment in the ReleaseFast case for why we pass -O2 rather
                     // than -O3 here.
                     try argv.append("-O2");
                     if (comp.bin_file.options.link_libc and target.os.tag != .wasi) {
