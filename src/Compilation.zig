@@ -230,6 +230,9 @@ libunwind_static_lib: ?CrtFile = null,
 /// Populated when we build the TSAN library. A Job to build this is placed in the queue
 /// and resolved before calling linker.flush().
 tsan_lib: ?CrtFile = null,
+/// Populated when we build the ASAN library. A Job to build this is placed in the queue
+/// and resolved before calling linker.flush().
+asan_lib: ?CrtFile = null,
 /// Populated when we build the libc static library. A Job to build this is placed in the queue
 /// and resolved before calling linker.flush().
 libc_static_lib: ?CrtFile = null,
@@ -793,6 +796,7 @@ pub const MiscTask = enum {
     libcxx,
     libcxxabi,
     libtsan,
+    libasan,
     libfuzzer,
     wasi_libc_crt_file,
     compiler_rt,
@@ -1880,6 +1884,10 @@ pub fn create(gpa: Allocator, arena: Allocator, options: CreateOptions) !*Compil
                 comp.queued_jobs.libtsan = true;
                 comp.remaining_prelink_tasks += 1;
             }
+            if (build_options.have_llvm and is_exe_or_dyn_lib and comp.config.any_sanitize_address) {
+                // TODO: build asan automatically
+                // try comp.queueJob(.libasan);
+            }
 
             if (target.isMinGW() and comp.config.any_non_single_threaded) {
                 // LLD might drop some symbols as unused during LTO and GCing, therefore,
@@ -2764,6 +2772,7 @@ pub fn emitLlvmObject(
         .is_small = comp.root_mod.optimize_mode == .ReleaseSmall,
         .time_report = comp.time_report,
         .sanitize_thread = comp.config.any_sanitize_thread,
+        .sanitize_address = comp.config.any_sanitize_address,
         .fuzz = comp.config.any_fuzz,
         .lto = comp.config.lto,
     });
@@ -5891,6 +5900,10 @@ pub fn addCCArgs(
                 if (mod.sanitize_thread) {
                     if (san_arg.items.len == 0) try san_arg.appendSlice(arena, prefix);
                     try san_arg.appendSlice(arena, "thread,");
+                }
+                if (mod.sanitize_address) {
+                    if (san_arg.items.len == 0) try san_arg.appendSlice(arena, prefix);
+                    try san_arg.appendSlice(arena, "address,");
                 }
                 if (mod.fuzz) {
                     if (san_arg.items.len == 0) try san_arg.appendSlice(arena, prefix);
